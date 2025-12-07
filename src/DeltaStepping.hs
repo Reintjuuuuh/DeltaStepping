@@ -185,12 +185,27 @@ findNextBucket buckets = go 0
 findRequests
     :: Int
     -> (Distance -> Bool)
-    -> Graph
+    -> Graph 
     -> IntSet
     -> TentativeDistances
     -> IO (IntMap Distance)
 findRequests threadCount p graph v' distances = do
-  undefined
+  --for now 1 thread
+  let nodeList = Set.toList v'
+  
+  newList <- foldM (\acc node -> do --NEEDS TO BE PARALLEL. FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
+    distance_v <- S.read distances node
+    let edges = G.out graph node
+
+    let filteredEdges = [edge | edge@(_, _, distance) <- edges, p distance]
+    let newDistance = [(neighbour, distance_v + distance) | (_, neighbour, distance) <- filteredEdges]
+    
+    return (newDistance ++ acc)
+   ) [] nodeList
+
+  --we now have a complete list of all nodes reachable from the bucket. Some might be shorter or longer than others, so we need to filter out. Above foldM can be parallilised(?)
+  
+  return (Map.fromListWith min newList)
 
 
 -- Execute requests for each of the given (node, distance) pairs
