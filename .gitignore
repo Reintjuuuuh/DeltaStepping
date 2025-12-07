@@ -1,0 +1,6 @@
+.stack-work/
+*~
+/stack.yaml.lock
+/dist-newstyle
+.DS_Store
+/cabal.project.local
