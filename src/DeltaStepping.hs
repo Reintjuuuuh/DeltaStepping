@@ -112,7 +112,7 @@ initialise graph delta source = do
       numBuckets = ceiling (maximum weights / delta) --ADD BUFFER IF STUFF BREAKS
 
   bucketsArray <- V.replicate numBuckets Set.empty --every bucket starts as IntSet.empty except for bucket 0 which has the start node
-  V.write bucketsArray 0 (Set.singleton source) 
+  V.write bucketsArray 0 (Set.singleton source)
   startRef <- newIORef 0
 
   return (Buckets { firstBucket = startRef, bucketArray = bucketsArray }, tentDistances)
@@ -147,14 +147,14 @@ allBucketsEmpty :: Buckets -> IO Bool
 allBucketsEmpty buckets = go 0
   where
     array = bucketArray buckets
-    
+
     n = V.length array
 
-    go i 
+    go i
       | i >= n    = return True
       | otherwise = do
           curBucket <- V.read array i
-          if curBucket == Set.empty 
+          if curBucket == Set.empty
             then go (i+1)
             else return False
   --The array is a vector with a pointer to a bucket. Buckets are IntSets containing the nodes in the bucket.
@@ -168,14 +168,14 @@ findNextBucket :: Buckets -> IO Int
 findNextBucket buckets = go 0
   where
     array = bucketArray buckets
-    
+
     n = V.length array
 
-    go i 
+    go i
       | i >= n    = return 0 --shouldnt be possible, but just in case
       | otherwise = do
           curBucket <- V.read array i
-          if curBucket == Set.empty 
+          if curBucket == Set.empty
             then go (i+1)
             else return i
 
@@ -185,26 +185,26 @@ findNextBucket buckets = go 0
 findRequests
     :: Int
     -> (Distance -> Bool)
-    -> Graph 
+    -> Graph
     -> IntSet
     -> TentativeDistances
     -> IO (IntMap Distance)
 findRequests threadCount p graph v' distances = do
   --for now 1 thread
   let nodeList = Set.toList v'
-  
+
   newList <- foldM (\acc node -> do --NEEDS TO BE PARALLEL. FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
     distance_v <- S.read distances node
     let edges = G.out graph node
 
     let filteredEdges = [edge | edge@(_, _, distance) <- edges, p distance]
     let newDistance = [(neighbour, distance_v + distance) | (_, neighbour, distance) <- filteredEdges]
-    
+
     return (newDistance ++ acc)
    ) [] nodeList
 
-  --we now have a complete list of all nodes reachable from the bucket. Some might be shorter or longer than others, so we need to filter out. Above foldM can be parallilised(?)
-  
+  -- We now have a complete list of all nodes reachable from the bucket. Some might be shorter or longer than others, so we need to filter out. Above foldM can be parallilised(?)
+
   return (Map.fromListWith min newList)
 
 
@@ -218,7 +218,11 @@ relaxRequests
     -> IntMap Distance
     -> IO ()
 relaxRequests threadCount buckets distances delta req = do
-  undefined
+  --eerst 1 thread
+
+  --
+
+  return ()
 
 
 -- Execute a single relaxation, moving the given node to the appropriate bucket
@@ -230,16 +234,32 @@ relax :: Buckets
       -> (Node, Distance) -- (w, x) in the paper
       -> IO ()
 relax buckets distances delta (node, newDistance) = do
-  undefined
 
+  outcome <- atomicModifyIOVectorFloat distances node (\currentDistance ->
+    if newDistance < currentDistance
+      then (newDistance, Just currentDistance)
+      else (currentDistance, Nothing)
+    )
 
--- -----------------------------------------------------------------------------
--- Starting framework
--- -----------------------------------------------------------------------------
---
--- Here are a collection of (data)types and utility functions that you can use.
--- You are free to change these as necessary.
---
+  case outcome of
+    Nothing -> return () -- No update needed
+    Just oldDistance -> do
+      -- If the CAS was successful and we updated the distance, we need to move the node to the appropriate bucket.
+      -- delete from old bucket
+      let newBucketIndex = floor (newDistance / delta)
+      let oldBucketIndex = floor (oldDistance / delta)
+
+      let len = V.length (bucketArray buckets)
+
+      when (oldDistance /= infinity && oldBucketIndex /= newBucketIndex) $ do
+          _ <- atomicModifyIOVector (bucketArray buckets) (oldBucketIndex `rem` len) 
+            (\set -> (Set.delete node set, ()))  --delete from old
+          return ()
+
+      _ <- atomicModifyIOVector (bucketArray buckets) (newBucketIndex `rem` len) 
+        (\set -> (Set.insert node set, ()))  --add to new
+      return ()
+
 
 type TentativeDistances = S.IOVector Distance
 
