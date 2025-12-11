@@ -137,8 +137,27 @@ step verbose threadCount graph delta buckets distances = do
   -- For debugging purposes, you may want to place:
   --   printVerbose verbose "inner step" graph delta buckets distances
   -- in the inner loop.
-  undefined
+  firstBucketIndex <- findNextBucket buckets
+  let arr = bucketArray buckets
+  
+  let
+    -- The algorithm loops while there are still non-empty buckets
+    loop r = do
+      bucket <- V.read arr firstBucketIndex
+      if bucket == Set.empty
+        then return r
+        else do
+          requestsLight <- findRequests threadCount (<=delta) graph bucket distances
+          let r' = Set.union r bucket
+          V.write arr firstBucketIndex Set.empty
 
+          relaxRequests threadCount buckets distances delta requestsLight 
+
+          loop r'
+
+  rFinal <- loop Set.empty
+  requestsHeavy <- findRequests threadCount (>delta) graph rFinal distances
+  relaxRequests threadCount buckets distances delta requestsHeavy
 
 -- Once all buckets are empty, the tentative distances are finalised and the
 -- algorithm terminates.
@@ -164,7 +183,7 @@ allBucketsEmpty buckets = go 0
 -- Return the index of the first non-empty bucket. Assumes that there is at
 -- least one non-empty bucket remaining.
 --
-findNextBucket :: Buckets -> IO Int
+findNextBucket :: Buckets -> IO Int --TODO: has to be cyclic. Not literally first empty bucket
 findNextBucket buckets = go 0
   where
     array = bucketArray buckets
@@ -219,10 +238,28 @@ relaxRequests
     -> IO ()
 relaxRequests threadCount buckets distances delta req = do
   --eerst 1 thread
+  --IntMap distances (req) is een koppeling van een node aan een MOGELIJKE distance.
+  --Voor elke request moeten we kijken of de distance lager is dan de echte distance, en als dat zo is updaten
+  forM_ (Map.toList req) $ relax buckets distances delta
+  
+  -- rip:
+  -- let list = Map.toList req
 
-  --
+  -- _ <- recursiveHandle list
 
-  return ()
+  -- return ()
+  -- where
+  --   recursiveHandle :: [(Set.Key, Distance)] -> IO ()
+  --   recursiveHandle [] = return ()
+  --   recursiveHandle (x:xs) = do
+  --     _ <- handle x
+  --     _ <- recursiveHandle xs
+  --     return ()
+
+  --   handle :: (Set.Key, Distance) -> IO ()
+  --   handle pair@(node, potentialDistance) = do
+  --     currentDistance <- S.read distances node
+  --     when (potentialDistance < currentDistance) $ relax buckets distances delta pair
 
 
 -- Execute a single relaxation, moving the given node to the appropriate bucket
@@ -246,17 +283,17 @@ relax buckets distances delta (node, newDistance) = do
     Just oldDistance -> do
       -- If the CAS was successful and we updated the distance, we need to move the node to the appropriate bucket.
       -- delete from old bucket
-      let newBucketIndex = floor (newDistance / delta)
-      let oldBucketIndex = floor (oldDistance / delta)
+      let newBucketIndex  = floor (newDistance / delta)
+      let len             = V.length (bucketArray buckets)
 
-      let len = V.length (bucketArray buckets)
+      when (oldDistance /= infinity) $ do
+          let oldBucketIndex = floor (oldDistance / delta)
+          when (oldBucketIndex /= newBucketIndex) $ do
+            _ <- atomicModifyIOVector (bucketArray buckets) (oldBucketIndex `rem` len)
+              (\set -> (Set.delete node set, ()))  --delete from old
+            return ()
 
-      when (oldDistance /= infinity && oldBucketIndex /= newBucketIndex) $ do
-          _ <- atomicModifyIOVector (bucketArray buckets) (oldBucketIndex `rem` len) 
-            (\set -> (Set.delete node set, ()))  --delete from old
-          return ()
-
-      _ <- atomicModifyIOVector (bucketArray buckets) (newBucketIndex `rem` len) 
+      _ <- atomicModifyIOVector (bucketArray buckets) (newBucketIndex `rem` len)
         (\set -> (Set.insert node set, ()))  --add to new
       return ()
 
@@ -325,7 +362,6 @@ printCurrentState graph distances = do
        else printf "  %4d  |  %5v  |  %f\n" v l x
   --
   printf "\n"
-
 printBuckets
     :: Graph
     -> Distance
