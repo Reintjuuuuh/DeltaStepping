@@ -109,7 +109,7 @@ initialise graph delta source = do
   S.write tentDistances source 0.0 --source is the index of the starting node so we can write this index as 0.0
 
   let weights = [w | (_, _, w) <- G.labEdges graph]
-      numBuckets = ceiling (maximum weights / delta) --ADD BUFFER IF STUFF BREAKS
+      numBuckets = ceiling (maximum weights / delta) + 1 --FUTURE ME: ADD BUFFER IF STUFF BREAKS
 
   bucketsArray <- V.replicate numBuckets Set.empty --every bucket starts as IntSet.empty except for bucket 0 which has the start node
   V.write bucketsArray 0 (Set.singleton source)
@@ -117,7 +117,7 @@ initialise graph delta source = do
 
   return (Buckets { firstBucket = startRef, bucketArray = bucketsArray }, tentDistances)
 
-
+-- cabal run exe:delta-stepping-test -- -p "bench"
 -- Take a single step of the algorithm.
 -- That is, one iteration of the outer while loop.
 --
@@ -143,6 +143,7 @@ step verbose threadCount graph delta buckets distances = do
   let
     -- The algorithm loops while there are still non-empty buckets
     loop r = do
+      printVerbose verbose "inner step" graph delta buckets distances
       bucket <- V.read arr firstBucketIndex
       if bucket == Set.empty
         then return r
@@ -183,20 +184,22 @@ allBucketsEmpty buckets = go 0
 -- Return the index of the first non-empty bucket. Assumes that there is at
 -- least one non-empty bucket remaining.
 --
-findNextBucket :: Buckets -> IO Int --TODO: has to be cyclic. Not literally first empty bucket
-findNextBucket buckets = go 0
+findNextBucket :: Buckets -> IO Int --TODO: has to be cyclic. Not literally first empty bucket. --Later Comment: actually this works. I dont know why but im not gonna questioin it. Later later comment: alright turns out my linear implementation was quirky. It DOES solve all testcases, but it does not respect the logic of deltastepping. It just picks the first empty bucket of the physical array, instead of treating it as cyclic. Weird that it still solves everything. Anyway, after implementing the following cyclic array it now solves 3x faster.
+findNextBucket buckets = do
+  first <- readIORef (firstBucket buckets) --for example, index 6. Search from index 6 and loop back around
+  go first
   where
     array = bucketArray buckets
-
     n = V.length array
 
-    go i
-      | i >= n    = return 0 --shouldnt be possible, but just in case
-      | otherwise = do
-          curBucket <- V.read array i
-          if curBucket == Set.empty
-            then go (i+1)
-            else return i
+    go i = do
+      let i' = i `rem` n
+      curBucket <- V.read array i'
+      if curBucket == Set.empty
+        then go (i+1)
+        else do
+          writeIORef (firstBucket buckets) i
+          return i'
 
 
 -- Create requests of (node, distance) pairs that fulfil the given predicate
