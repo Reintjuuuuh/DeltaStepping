@@ -211,7 +211,7 @@ findRequests
     -> IntSet
     -> TentativeDistances
     -> IO (IntMap Distance)
-findRequests threadCount p graph v' distances = do
+findRequests threadCount p graph v' distances = do --FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
 
   resultArray <- V.replicate threadCount Map.empty
 
@@ -235,7 +235,7 @@ findRequests threadCount p graph v' distances = do
       where
         handle :: [Int] -> IO [(Node, Distance)]
         handle threadList = do
-          foldM (\acc node -> do --NEEDS TO BE PARALLEL. FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
+          foldM (\acc node -> do 
             distance_v <- S.read distances node
             let edges = G.out graph node
 
@@ -275,6 +275,7 @@ relaxRequests threadCount buckets distances delta req = do
       forM_ (chunks !! index) $ relax buckets distances delta
 
   -- rip:
+  -- i made this at first and then realized this was exactly the same as this one liner: forM_ (Map.toList req) $ relax buckets distances delta
   -- let list = Map.toList req
 
   -- _ <- recursiveHandle list
