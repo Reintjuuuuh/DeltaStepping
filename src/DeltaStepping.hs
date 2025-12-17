@@ -139,7 +139,7 @@ step verbose threadCount graph delta buckets distances = do
   -- in the inner loop.
   firstBucketIndex <- findNextBucket buckets
   let arr = bucketArray buckets
-  
+
   let
     -- The algorithm loops while there are still non-empty buckets
     loop r = do
@@ -152,7 +152,7 @@ step verbose threadCount graph delta buckets distances = do
           let r' = Set.union r bucket
           V.write arr firstBucketIndex Set.empty
 
-          relaxRequests threadCount buckets distances delta requestsLight 
+          relaxRequests threadCount buckets distances delta requestsLight
 
           loop r'
 
@@ -212,24 +212,47 @@ findRequests
     -> TentativeDistances
     -> IO (IntMap Distance)
 findRequests threadCount p graph v' distances = do
-  --for now 1 thread
-  let nodeList = Set.toList v'
 
-  newList <- foldM (\acc node -> do --NEEDS TO BE PARALLEL. FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
-    distance_v <- S.read distances node
-    let edges = G.out graph node
+  resultArray <- V.replicate threadCount Map.empty
 
-    let filteredEdges = [edge | edge@(_, _, distance) <- edges, p distance]
-    let newDistance = [(neighbour, distance_v + distance) | (_, neighbour, distance) <- filteredEdges]
+  forkThreads threadCount (worker resultArray)
 
-    return (newDistance ++ acc)
-   ) [] nodeList
+  maps <- forM [0 .. threadCount - 1] $ \i -> V.read resultArray i
+
+  return (Map.unionsWith min maps)
+
+  where
+    nodeList = Set.toList v'
+    chunks = splitList threadCount nodeList
+
+    worker :: V.IOVector (IntMap Distance) -> Int -> IO ()
+    worker resultArray index = do
+      when (index < length chunks) $ do
+          result <- handle (chunks !! index)
+          let threadMap = Map.fromListWith min result
+          threadMap `seq` V.write resultArray index threadMap --needs to evaluate here because in my initial implementation i just wrote to the resultArray. This didnt speed anything up though because it was just a thunk so the execution speed was the same as one thread.
+
+      where
+        handle :: [Int] -> IO [(Node, Distance)]
+        handle threadList = do
+          foldM (\acc node -> do --NEEDS TO BE PARALLEL. FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
+            distance_v <- S.read distances node
+            let edges = G.out graph node
+
+            let filteredEdges = [edge | edge@(_, _, distance) <- edges, p distance]
+            let newDistance = [(neighbour, distance_v + distance) | (_, neighbour, distance) <- filteredEdges]
+
+            return (newDistance ++ acc)
+            ) [] threadList
 
   -- We now have a complete list of all nodes reachable from the bucket. Some might be shorter or longer than others, so we need to filter out. Above foldM can be parallilised(?)
-
-  return (Map.fromListWith min newList)
-
-
+  --
+splitList :: Int -> [a] -> [[a]]
+splitList _ [] = []
+splitList n list = a : (splitList (n-1) b)
+  where
+    size = (length list + n - 1) `div` n
+    (a, b) = splitAt size list
 -- Execute requests for each of the given (node, distance) pairs
 --
 relaxRequests
@@ -240,11 +263,17 @@ relaxRequests
     -> IntMap Distance
     -> IO ()
 relaxRequests threadCount buckets distances delta req = do
-  --eerst 1 thread
   --IntMap distances (req) is een koppeling van een node aan een MOGELIJKE distance.
   --Voor elke request moeten we kijken of de distance lager is dan de echte distance, en als dat zo is updaten
-  forM_ (Map.toList req) $ relax buckets distances delta
-  
+  let chunks = splitList threadCount (Map.toList req)
+
+  forkThreads threadCount (worker chunks)
+
+  where
+    worker :: [[(Set.Key, Distance)]] -> Int -> IO ()
+    worker chunks index = when (index < length chunks) $ do
+      forM_ (chunks !! index) $ relax buckets distances delta
+
   -- rip:
   -- let list = Map.toList req
 
