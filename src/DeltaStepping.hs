@@ -109,7 +109,7 @@ initialise graph delta source = do
   S.write tentDistances source 0.0 --source is the index of the starting node so we can write this index as 0.0
 
   let weights = [w | (_, _, w) <- G.labEdges graph]
-      numBuckets = ceiling (maximum weights / delta) + 1 --FUTURE ME: ADD BUFFER IF STUFF BREAKS
+      numBuckets = ceiling (maximum weights / delta) + 1 --lmao if i remove the +1 the benchmarks become 4x slower
 
   bucketsArray <- V.replicate numBuckets Set.empty --every bucket starts as IntSet.empty except for bucket 0 which has the start node
   V.write bucketsArray 0 (Set.singleton source)
@@ -137,16 +137,16 @@ step verbose threadCount graph delta buckets distances = do
   -- For debugging purposes, you may want to place:
   --   printVerbose verbose "inner step" graph delta buckets distances
   -- in the inner loop.
-  firstBucketIndex <- findNextBucket buckets
+  firstBucketIndex <- findNextBucket buckets --get the first empty bucket
   let arr = bucketArray buckets
 
   let
     -- The algorithm loops while there are still non-empty buckets
     loop r = do
       printVerbose verbose "inner step" graph delta buckets distances
-      bucket <- V.read arr firstBucketIndex
-      if bucket == Set.empty
-        then return r
+      bucket <- V.read arr firstBucketIndex --we read the index of the first bucket so we can check  if its empty
+      if bucket == Set.empty --if its empty were done and we can stop the loop
+        then return r --if it isnt we need to do an iteration of the loop where we find light request and relex them. 
         else do
           requestsLight <- findRequests threadCount (<=delta) graph bucket distances
           let r' = Set.union r bucket
@@ -154,10 +154,10 @@ step verbose threadCount graph delta buckets distances = do
 
           relaxRequests threadCount buckets distances delta requestsLight
 
-          loop r'
+          loop r' --because light requests can land in the same bucket we need to do another loop to check if the bucket is actually empty.
 
   rFinal <- loop Set.empty
-  requestsHeavy <- findRequests threadCount (>delta) graph rFinal distances
+  requestsHeavy <- findRequests threadCount (>delta) graph rFinal distances --the light requests are done so we can continue with the heavy requests which wont land in the same bucket
   relaxRequests threadCount buckets distances delta requestsHeavy
 
 -- Once all buckets are empty, the tentative distances are finalised and the
@@ -170,7 +170,7 @@ allBucketsEmpty buckets = go 0
 
     n = V.length array
 
-    go i
+    go i -- just a simple loop which checks every bucket in the bucketarray. If even a single is not empty it returns False, and otherwise it returns true if we have looped over all indices
       | i >= n    = return True
       | otherwise = do
           curBucket <- V.read array i
@@ -193,7 +193,7 @@ findNextBucket buckets = do
     n = V.length array
 
     go i = do
-      let i' = i `rem` n
+      let i' = i `rem` n --it needs to be cyclic so we differentiate between a "logical" index and a "real" index. i is the real index and i' is the logical index. The firstBucket can become very large, but by using `rem` on it we can force i' to be in the array and make it cyclic
       curBucket <- V.read array i'
       if curBucket == Set.empty
         then go (i+1)
@@ -213,17 +213,17 @@ findRequests
     -> IO (IntMap Distance)
 findRequests threadCount p graph v' distances = do --FOR FUTURE ME: split the nodeList in an equal amount just like with IBAN and just let every thread do exactly this function. Afterwards union all their answers with a minimum for doubles.
 
-  resultArray <- V.replicate threadCount Map.empty
+  resultArray <- V.replicate threadCount Map.empty --To prevent concurrency problems we give every thread its own part in an array to write to. They cannot write to another array so this way no concurrency problems can occur.
 
   forkThreads threadCount (worker resultArray)
 
   maps <- forM [0 .. threadCount - 1] $ \i -> V.read resultArray i
 
-  return (Map.unionsWith min maps)
+  return (Map.unionsWith min maps) --when all threads wrote their results to the resultArray we union this with a minimum function. This way, if two different threads found a path to a node, we choose the one with the shortest distance.
 
   where
     nodeList = Set.toList v'
-    chunks = splitList threadCount nodeList
+    chunks = splitList threadCount nodeList --use a helper function split list to evenly split all work between the number of threads. The index of the thread determines what chunk it will handle
 
     worker :: V.IOVector (IntMap Distance) -> Int -> IO ()
     worker resultArray index = do
@@ -235,21 +235,21 @@ findRequests threadCount p graph v' distances = do --FOR FUTURE ME: split the no
       where
         handle :: [Int] -> IO [(Node, Distance)]
         handle threadList = do
-          foldM (\acc node -> do 
-            distance_v <- S.read distances node
-            let edges = G.out graph node
+          foldM (\acc node -> do --accumulate a list of node distance pairs by folding over the threads chunk
+            distance_v <- S.read distances node --read the distance to the node so far
+            let edges = G.out graph node --get all neighbouring nodes
 
-            let filteredEdges = [edge | edge@(_, _, distance) <- edges, p distance]
-            let newDistance = [(neighbour, distance_v + distance) | (_, neighbour, distance) <- filteredEdges]
+            let filteredEdges = [edge | edge@(_, _, distance) <- edges, p distance] --filter on the predicate. This way we can filter on light or heavy edges
+            let newDistance = [(neighbour, distance_v + distance) | (_, neighbour, distance) <- filteredEdges] --make a tuple with the node, and the distance so far + the distance to this node
 
             return (newDistance ++ acc)
             ) [] threadList
 
-  -- We now have a complete list of all nodes reachable from the bucket. Some might be shorter or longer than others, so we need to filter out. Above foldM can be parallilised(?)
+  -- We now have a complete list of all nodes reachable from the bucket. Some might be shorter or longer than others, so we need to filter out. This is done with the earlier union with min
   --
 splitList :: Int -> [a] -> [[a]]
 splitList _ [] = []
-splitList n list = a : (splitList (n-1) b)
+splitList n list = a : (splitList (n-1) b) --simple helper function for find and relaxrequests
   where
     size = (length list + n - 1) `div` n
     (a, b) = splitAt size list
@@ -265,9 +265,9 @@ relaxRequests
 relaxRequests threadCount buckets distances delta req = do
   --IntMap distances (req) is een koppeling van een node aan een MOGELIJKE distance.
   --Voor elke request moeten we kijken of de distance lager is dan de echte distance, en als dat zo is updaten
-  let chunks = splitList threadCount (Map.toList req)
+  let chunks = splitList threadCount (Map.toList req) 
 
-  forkThreads threadCount (worker chunks)
+  forkThreads threadCount (worker chunks) --because the relax function updates stuff atomically we dont have to worry about concurrency in this function.
 
   where
     worker :: [[(Set.Key, Distance)]] -> Int -> IO ()
@@ -275,7 +275,7 @@ relaxRequests threadCount buckets distances delta req = do
       forM_ (chunks !! index) $ relax buckets distances delta
 
   -- rip:
-  -- i made this at first and then realized this was exactly the same as this one liner: forM_ (Map.toList req) $ relax buckets distances delta
+  -- i made this at first and then realized this was exactly the same as this one liner: forM_ (Map.toList req) $ relax buckets distances delta ;-;
   -- let list = Map.toList req
 
   -- _ <- recursiveHandle list
@@ -305,23 +305,23 @@ relax :: Buckets
       -> IO ()
 relax buckets distances delta (node, newDistance) = do
 
-  outcome <- atomicModifyIOVectorFloat distances node (\currentDistance ->
+  outcome <- atomicModifyIOVectorFloat distances node (\currentDistance -> --atomically check if the newdistance is shorther than the old one. If this is the case we update it
     if newDistance < currentDistance
       then (newDistance, Just currentDistance)
       else (currentDistance, Nothing)
     )
 
   case outcome of
-    Nothing -> return () -- No update needed
+    Nothing -> return () -- No update needed because the newdistance wasnt shorter than the old one
     Just oldDistance -> do
       -- If the CAS was successful and we updated the distance, we need to move the node to the appropriate bucket.
       -- delete from old bucket
       let newBucketIndex  = floor (newDistance / delta)
       let len             = V.length (bucketArray buckets)
 
-      when (oldDistance /= infinity) $ do
+      when (oldDistance /= infinity) $ do --if distance is infinity we cannot delete it from a bucket because it hasnt been inserted anywhere yet.
           let oldBucketIndex = floor (oldDistance / delta)
-          when (oldBucketIndex /= newBucketIndex) $ do
+          when (oldBucketIndex /= newBucketIndex) $ do --just a simple optimization. If the index of the buckets is the same we dont have to delete the node and re-add it. We can just update it (this is the same behaviour for adding it)
             _ <- atomicModifyIOVector (bucketArray buckets) (oldBucketIndex `rem` len)
               (\set -> (Set.delete node set, ()))  --delete from old
             return ()
